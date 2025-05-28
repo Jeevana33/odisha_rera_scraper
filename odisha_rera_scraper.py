@@ -1,63 +1,75 @@
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+import requests
+from bs4 import BeautifulSoup
 import pandas as pd
+import time
 
-def scrape_odisha_rera_projects(chromedriver_path: str):
-    service = Service(chromedriver_path)
-    driver = webdriver.Chrome(service=service)
-    wait = WebDriverWait(driver, 10)
+# Website URL
+BASE_URL = "https://rera.odisha.gov.in"
+PROJECT_LIST_URL = BASE_URL + "/projects/project-list"
 
-    url = "https://rera.odisha.gov.in/projects/project-list"
-    driver.get(url)
+# Browser headers to avoid blocking
+HEADERS = {
+    "User-Agent": "Mozilla/5.0"
+}
 
-    # Wait until projects table loads
-    wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "table#tblProjectList tbody tr")))
+# Step 1: Get first 6 project detail page links
+def get_project_links():
+    page = requests.get(PROJECT_LIST_URL, headers=HEADERS)
+    soup = BeautifulSoup(page.text, "html.parser")
 
-    projects = driver.find_elements(By.CSS_SELECTOR, "table#tblProjectList tbody tr")[:6]
+    project_links = []
 
-    data = []
+    # Find 'View Details' buttons
+    buttons = soup.find_all("a", class_="btn-view", href=True)
 
-    for project in projects:
-        # Click View Details link
-        view_details_link = project.find_element(By.LINK_TEXT, "View Details")
-        view_details_link.click()
+    for btn in buttons:
+        full_link = BASE_URL + btn['href']
+        project_links.append(full_link)
+        if len(project_links) == 6:
+            break
 
-        # Wait for details page to load key field
-        wait.until(EC.presence_of_element_located((By.XPATH, "//td[text()='RERA Registration No.']")))
+    return project_links
 
-        rera_regd_no = driver.find_element(By.XPATH, "//td[text()='RERA Registration No.']/following-sibling::td").text
-        project_name = driver.find_element(By.XPATH, "//td[text()='Project Name']/following-sibling::td").text
+# Step 2: Extract info from project detail page
+def get_project_details(url):
+    page = requests.get(url, headers=HEADERS)
+    soup = BeautifulSoup(page.text, "html.parser")
 
-        # Click Promoter Details Tab
-        promoter_tab = driver.find_element(By.LINK_TEXT, "Promoter Details")
-        promoter_tab.click()
+    # Helper to find table values by label
+    def find_text(label):
+        label_cell = soup.find("td", string=label)
+        if label_cell:
+            value_cell = label_cell.find_next_sibling("td")
+            return value_cell.text.strip() if value_cell else "N/A"
+        return "N/A"
 
-        wait.until(EC.presence_of_element_located((By.XPATH, "//td[text()='Company Name']")))
+    return {
+        "RERA Regd. No": find_text("RERA Registration Number"),
+        "Project Name": find_text("Project Name"),
+        "Promoter Name": find_text("Company Name"),
+        "Promoter Address": find_text("Registered Office Address"),
+        "GST No": find_text("GST No."),
+        "Detail Page URL": url
+    }
 
-        promoter_name = driver.find_element(By.XPATH, "//td[text()='Company Name']/following-sibling::td").text
-        address = driver.find_element(By.XPATH, "//td[text()='Registered Office Address']/following-sibling::td").text
-        gst_no = driver.find_element(By.XPATH, "//td[text()='GST No.']/following-sibling::td").text
+# Step 3: Main function
+def main():
+    print("Getting first 6 project links...")
+    links = get_project_links()
 
-        data.append({
-            "RERA Regd. No": rera_regd_no,
-            "Project Name": project_name,
-            "Promoter Name": promoter_name,
-            "Registered Office Address": address,
-            "GST No.": gst_no
-        })
+    print("Scraping project details...")
+    projects = []
+    for i, link in enumerate(links, 1):
+        print(f"{i}. Scraping: {link}")
+        data = get_project_details(link)
+        projects.append(data)
+        time.sleep(1)  # Be polite to the website
 
-        driver.back()
-        wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "table#tblProjectList tbody tr")))
+    # Save to CSV
+    df = pd.DataFrame(projects)
+    df.to_csv("orera_first_6_projects.csv", index=False)
+    print("Done! Data saved to 'orera_first_6_projects.csv'")
 
-    driver.quit()
-
-    df = pd.DataFrame(data)
-    df.to_csv("odisha_rera_projects.csv", index=False)
-    print("Scraping completed. Data saved to odisha_rera_projects.csv")
-
+# Run the main function
 if __name__ == "__main__":
-    chromedriver_path = "/path/to/chromedriver"  # <-- CHANGE THIS to your chromedriver path
-    scrape_odisha_rera_projects(chromedriver_path)
+    main()
